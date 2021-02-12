@@ -1,0 +1,21 @@
+{
+  "files": {
+    "main.css": "/stake-trading-journal/static/css/main.37db615a.chunk.css",
+    "main.js": "/stake-trading-journal/static/js/main.080069e4.chunk.js",
+    "main.js.map": "/stake-trading-journal/static/js/main.080069e4.chunk.js.map",
+    "runtime-main.js": "/stake-trading-journal/static/js/runtime-main.1352a3af.js",
+    "runtime-main.js.map": "/stake-trading-journal/static/js/runtime-main.1352a3af.js.map",
+    "static/js/2.f60c3653.chunk.js": "/stake-trading-journal/static/js/2.f60c3653.chunk.js",
+    "static/js/2.f60c3653.chunk.js.map": "/stake-trading-journal/static/js/2.f60c3653.chunk.js.map",
+    "index.html": "/stake-trading-journal/index.html",
+    "static/css/main.37db615a.chunk.css.map": "/stake-trading-journal/static/css/main.37db615a.chunk.css.map",
+    "static/js/2.f60c3653.chunk.js.LICENSE.txt": "/stake-trading-journal/static/js/2.f60c3653.chunk.js.LICENSE.txt",
+    "static/media/loader.d6f2f542.svg": "/stake-trading-journal/static/media/loader.d6f2f542.svg"
+  },
+  "entrypoints": [
+    "static/js/runtime-main.1352a3af.js",
+    "static/js/2.f60c3653.chunk.js",
+    "static/css/main.37db615a.chunk.css",
+    "static/js/main.080069e4.chunk.js"
+  ]
+}
