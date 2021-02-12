@@ -313,7 +313,7 @@ function calculateProfits(data: DayLogs) {
 function getDisplayProfit(raw: number, percent: number) {
   const isProfit = raw >= 0;
   const displayProfitRaw = `${isProfit ? "+" : "-"}$${Math.abs(raw).toPrecision(
-    4
+    3
   )}`;
   const displayProfitPercent = `${isProfit ? "+" : "-"}${Math.abs(
     percent
@@ -507,7 +507,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
           Log out
         </InternalLink>
       </header>
-      <main className="p-4 flex flex-col items-center">
+      <main className="mt-8 p-4 flex flex-col items-center">
         <div style={{ width: 400 }}>{error()}</div>
         {showUnmatchedAlert && (
           <div style={{ width: 400 }}>
@@ -609,7 +609,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                         return (
                           <div
                             key={dayLog.date}
-                            className="mt-4 p-2 shadow rounded-lg"
+                            className="mt-4 p-2 border border-gray-100 shadow rounded-lg"
                           >
                             <div className="flex items-center">
                               <H4>{dayDate.toFormat("EEEE")}</H4>
