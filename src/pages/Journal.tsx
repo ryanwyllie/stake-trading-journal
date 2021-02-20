@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { DateTime } from "luxon";
 import { Transaction, User } from "../types";
-import { loadTrades } from "../libs/clients/stake";
+import { loadMarketData, loadTrades } from "../libs/clients/stake";
 import { useAsyncState } from "../libs/hooks/general";
 
 import H2 from "../components/headings/H2";
@@ -11,8 +11,8 @@ import InternalLink from "../components/links/Internal";
 import LoaderIcon from "../components/icons/Loader";
 import ErrorAlert from "../components/alerts/Error";
 
-const TABLE_WIDTH = 1000;
-const CELL_WIDTH = 150;
+const TABLE_WIDTH = 1300;
+const CELL_WIDTH = 125;
 
 interface BuySellEntry {
   orderId: string;
@@ -31,20 +31,28 @@ interface LogEntry {
   buys: BuySellEntry[];
   sells: BuySellEntry[];
   holdingUnitCount: number;
-  profitRaw: number;
-  profitPercent: number;
-  spent: number;
-  earned: number;
+  realisedProfitRaw: number;
+  realisedProfitPercent: number;
+  unrealisedProfitRaw: number;
+  unrealisedProfitPercent: number;
+  combinedProfitRaw: number;
+  combinedProfitPercent: number;
+  realisedCost: number;
+  unrealisedCost: number;
 }
 
 interface DayLog {
   symbols: {
     [symbol: string]: LogEntry;
   };
-  profitRaw: number;
-  profitPercent: number;
-  spent: number;
-  earned: number;
+  realisedProfitRaw: number;
+  realisedProfitPercent: number;
+  unrealisedProfitRaw: number;
+  unrealisedProfitPercent: number;
+  combinedProfitRaw: number;
+  combinedProfitPercent: number;
+  realisedCost: number;
+  unrealisedCost: number;
   date: string;
 }
 
@@ -53,10 +61,14 @@ type DayLogs = Array<DayLog | null>;
 interface WeekLog {
   date: DateTime;
   weekOfMonth: number;
-  profitRaw: number;
-  profitPercent: number;
-  spent: number;
-  earned: number;
+  realisedProfitRaw: number;
+  realisedProfitPercent: number;
+  unrealisedProfitRaw: number;
+  unrealisedProfitPercent: number;
+  combinedProfitRaw: number;
+  combinedProfitPercent: number;
+  realisedCost: number;
+  unrealisedCost: number;
   dayLogs: DayLogs;
 }
 
@@ -64,10 +76,14 @@ type WeekLogs = WeekLog[];
 
 interface MonthLog {
   date: DateTime;
-  profitRaw: number;
-  profitPercent: number;
-  spent: number;
-  earned: number;
+  realisedProfitRaw: number;
+  realisedProfitPercent: number;
+  unrealisedProfitRaw: number;
+  unrealisedProfitPercent: number;
+  combinedProfitRaw: number;
+  combinedProfitPercent: number;
+  realisedCost: number;
+  unrealisedCost: number;
   weekLogs: WeekLogs;
 }
 
@@ -124,10 +140,14 @@ function fillDataArrayWithBuys(
       if (!dayLog) {
         dayLog = {
           symbols: {},
-          profitRaw: 0,
-          profitPercent: 0,
-          spent: 0,
-          earned: 0,
+          realisedProfitRaw: 0,
+          realisedProfitPercent: 0,
+          unrealisedProfitRaw: 0,
+          unrealisedProfitPercent: 0,
+          combinedProfitRaw: 0,
+          combinedProfitPercent: 0,
+          realisedCost: 0,
+          unrealisedCost: 0,
           date: date.startOf("day").toISO(),
         };
       }
@@ -140,10 +160,14 @@ function fillDataArrayWithBuys(
           buys: [],
           sells: [],
           holdingUnitCount: 0,
-          profitRaw: 0,
-          profitPercent: 0,
-          spent: 0,
-          earned: 0,
+          realisedProfitRaw: 0,
+          realisedProfitPercent: 0,
+          unrealisedProfitRaw: 0,
+          unrealisedProfitPercent: 0,
+          combinedProfitRaw: 0,
+          combinedProfitPercent: 0,
+          realisedCost: 0,
+          unrealisedCost: 0,
         };
       }
 
@@ -237,14 +261,20 @@ function fillDataArrayWithSells(data: DayLogs, transactions: Transaction[]) {
   return [newData, unmatchedTransactions] as [DayLogs, Transaction[]];
 }
 
-function calculateProfits(data: DayLogs) {
+function calculateProfits(
+  data: DayLogs,
+  symbolPrices: { [symbol: string]: number }
+) {
   return data.map((dayLog) => {
     if (!dayLog) {
       return null;
     }
 
-    let dayAmountSpent = 0;
-    let dayAmountEarned = 0;
+    let dayRealisedCost = 0;
+    let dayRealisedGain = 0;
+    let dayUnrealisedCost = 0;
+    let dayUnrealisedGain = 0;
+
     const symbols = Object.keys(dayLog.symbols).reduce<DayLog["symbols"]>(
       (carry, symbol) => {
         const logEntry = dayLog.symbols[symbol];
@@ -253,37 +283,81 @@ function calculateProfits(data: DayLogs) {
         logEntry.sells.sort(sortBuySell);
         logEntry.buys.sort(sortBuySell);
 
-        const symbolAmountEarned = logEntry.sells.reduce((total, sell) => {
+        const realisedGain = logEntry.sells.reduce((total, sell) => {
           quantitySold += sell.unitQuantity;
           return (total += sell.unitQuantity * sell.unitPrice);
         }, 0);
-        const symbolAmountSpent = logEntry.buys.reduce((total, buy) => {
-          if (quantitySold > 0) {
-            const consumedAmount =
-              buy.unitQuantity > quantitySold ? quantitySold : buy.unitQuantity;
-            quantitySold -= consumedAmount;
-            return (total += consumedAmount * buy.unitPrice);
-          } else {
-            return total;
-          }
-        }, 0);
-        const profitRaw = symbolAmountEarned - symbolAmountSpent;
-        const profitPercent =
-          profitRaw === 0
-            ? 0
-            : (Math.abs(profitRaw) / symbolAmountSpent) *
-              100 *
-              (profitRaw < 0 ? -1 : 1);
+        const [realisedCost, unrealisedCost] = logEntry.buys.reduce(
+          (carry, buy) => {
+            let buyQuantity = buy.unitQuantity;
 
-        dayAmountSpent += symbolAmountSpent;
-        dayAmountEarned += symbolAmountEarned;
+            if (quantitySold > 0) {
+              if (buyQuantity > quantitySold) {
+                carry[0] = carry[0] + quantitySold * buy.unitPrice;
+                buyQuantity -= quantitySold;
+                quantitySold = 0;
+              } else {
+                carry[0] = carry[0] + buyQuantity * buy.unitPrice;
+                quantitySold -= buyQuantity;
+                buyQuantity = 0;
+              }
+            }
+
+            if (buyQuantity > 0) {
+              carry[1] = carry[1] + buyQuantity * buy.unitPrice;
+            }
+
+            return carry;
+          },
+          [0, 0]
+        );
+        const realisedProfitRaw = realisedGain - realisedCost;
+        const realisedProfitPercent =
+          realisedProfitRaw === 0
+            ? 0
+            : (Math.abs(realisedProfitRaw) / realisedCost) *
+              100 *
+              (realisedProfitRaw < 0 ? -1 : 1);
+
+        const symbolPrice = symbolPrices[symbol] || 0;
+        const unrealisedGain = logEntry.holdingUnitCount * symbolPrice;
+        const unrealisedProfitRaw =
+          symbolPrice && logEntry.holdingUnitCount
+            ? unrealisedGain - unrealisedCost
+            : 0;
+
+        const unrealisedProfitPercent =
+          unrealisedProfitRaw === 0
+            ? 0
+            : (Math.abs(unrealisedProfitRaw) / unrealisedCost) *
+              100 *
+              (unrealisedProfitRaw < 0 ? -1 : 1);
+
+        const combinedProfitRaw =
+          realisedGain + unrealisedGain - (realisedCost + unrealisedCost);
+        const combinedProfitPercent =
+          combinedProfitRaw === 0
+            ? 0
+            : (Math.abs(realisedProfitRaw + unrealisedProfitRaw) /
+                (realisedCost + unrealisedCost)) *
+              100 *
+              (combinedProfitRaw < 0 ? -1 : 1);
+
+        dayRealisedCost += realisedCost;
+        dayRealisedGain += realisedGain;
+        dayUnrealisedCost += unrealisedCost;
+        dayUnrealisedGain += unrealisedGain;
 
         carry[symbol] = {
           ...logEntry,
-          profitRaw,
-          profitPercent,
-          spent: symbolAmountSpent,
-          earned: symbolAmountEarned,
+          realisedProfitRaw,
+          realisedProfitPercent,
+          unrealisedProfitRaw,
+          unrealisedProfitPercent,
+          combinedProfitRaw,
+          combinedProfitPercent,
+          realisedCost,
+          unrealisedCost,
         };
 
         return carry;
@@ -291,21 +365,43 @@ function calculateProfits(data: DayLogs) {
       {}
     );
 
-    const profitRaw = dayAmountEarned - dayAmountSpent;
-    const profitPercent =
-      profitRaw === 0
+    const realisedProfitRaw = dayRealisedGain - dayRealisedCost;
+    const realisedProfitPercent =
+      realisedProfitRaw === 0
         ? 0
-        : (Math.abs(profitRaw) / dayAmountSpent) *
+        : (Math.abs(realisedProfitRaw) / dayRealisedCost) *
           100 *
-          (profitRaw < 0 ? -1 : 1);
+          (realisedProfitRaw < 0 ? -1 : 1);
+    const unrealisedProfitRaw = dayUnrealisedGain - dayUnrealisedCost;
+    const unrealisedProfitPercent =
+      unrealisedProfitRaw === 0
+        ? 0
+        : (Math.abs(unrealisedProfitRaw) / dayUnrealisedCost) *
+          100 *
+          (unrealisedProfitRaw < 0 ? -1 : 1);
+    const combinedProfitRaw =
+      dayRealisedGain +
+      dayUnrealisedGain -
+      (dayRealisedCost + dayUnrealisedCost);
+    const combinedProfitPercent =
+      combinedProfitRaw === 0
+        ? 0
+        : (Math.abs(realisedProfitRaw + unrealisedProfitRaw) /
+            (dayRealisedCost + dayUnrealisedCost)) *
+          100 *
+          (combinedProfitRaw < 0 ? -1 : 1);
 
     return {
       ...dayLog,
       symbols,
-      profitRaw,
-      profitPercent,
-      spent: dayAmountSpent,
-      earned: dayAmountEarned,
+      realisedProfitRaw,
+      realisedProfitPercent,
+      unrealisedProfitRaw,
+      unrealisedProfitPercent,
+      combinedProfitRaw,
+      combinedProfitPercent,
+      realisedCost: dayRealisedCost,
+      unrealisedCost: dayUnrealisedCost,
     };
   });
 }
@@ -322,18 +418,68 @@ function getDisplayProfit(raw: number, percent: number) {
   return [displayProfitRaw, displayProfitPercent];
 }
 
+function getDisplayProfits(data: {
+  realisedProfitRaw: number;
+  realisedProfitPercent: number;
+  unrealisedProfitRaw: number;
+  unrealisedProfitPercent: number;
+  combinedProfitRaw: number;
+  combinedProfitPercent: number;
+}) {
+  const [realisedRaw, realisedPercent] = getDisplayProfit(
+    data.realisedProfitRaw,
+    data.realisedProfitPercent
+  );
+  const [unrealisedRaw, unrealisedPercent] = getDisplayProfit(
+    data.unrealisedProfitRaw,
+    data.unrealisedProfitPercent
+  );
+  const [combinedRaw, combinedPercent] = getDisplayProfit(
+    data.combinedProfitRaw,
+    data.combinedProfitPercent
+  );
+
+  return {
+    displayRealisedRaw: realisedRaw,
+    displayRealisedPercent: realisedPercent,
+    displayUnrealisedRaw: unrealisedRaw,
+    displayUnrealisedPercent: unrealisedPercent,
+    displayCombinedRaw: combinedRaw,
+    displayCombinedPercent: combinedPercent,
+  };
+}
+
 interface JournalPageProps {
   user: User;
 }
 const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
   const cachedData = window.localStorage.getItem("journalData");
   const { loading, setLoading, error, setError } = useAsyncState();
-  const [initialised, setInitialised] = useState(false);
+  const [startLoadTrades, setStartLoadTrades] = useState(false);
+  const [endLoadTrades, setEndLoadTrades] = useState(false);
+  const [startLoadMarketData, setStartLoadMarketData] = useState(false);
   const [data, setData] = useState<DayLogs>(
     cachedData ? JSON.parse(cachedData) : []
   );
   const [showUnmatchedAlert, setShowUnmatchedAlert] = useState(false);
   const [unmatchedTransactionCount, setUnmatchedTransactionCount] = useState(0);
+  const holdingSymbols = useMemo(() => {
+    const symbols = data.reduce<{ [symbol: string]: boolean }>(
+      (carry, dayLog) => {
+        if (dayLog) {
+          Object.values(dayLog.symbols).forEach((dayLogSymbol) => {
+            if (dayLogSymbol.holdingUnitCount > 0) {
+              carry[dayLogSymbol.instrument.symbol] = true;
+            }
+          });
+        }
+        return carry;
+      },
+      {}
+    );
+
+    return Object.keys(symbols);
+  }, [data]);
   const monthLogs = useMemo(() => {
     const newMonthLogs = data.reduce<MonthLogs>((carry, dayLog) => {
       if (!dayLog) {
@@ -350,10 +496,14 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
       if (!monthLog) {
         monthLog = {
           date: startOfMonth,
-          profitRaw: 0,
-          profitPercent: 0,
-          spent: 0,
-          earned: 0,
+          realisedProfitRaw: 0,
+          realisedProfitPercent: 0,
+          unrealisedProfitRaw: 0,
+          unrealisedProfitPercent: 0,
+          combinedProfitRaw: 0,
+          combinedProfitPercent: 0,
+          realisedCost: 0,
+          unrealisedCost: 0,
           weekLogs: [],
         };
 
@@ -376,35 +526,71 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
         weekLog = {
           date: startOfWeek,
           weekOfMonth: weekNumber,
-          profitRaw: 0,
-          profitPercent: 0,
-          spent: 0,
-          earned: 0,
+          realisedProfitRaw: 0,
+          realisedProfitPercent: 0,
+          unrealisedProfitRaw: 0,
+          unrealisedProfitPercent: 0,
+          combinedProfitRaw: 0,
+          combinedProfitPercent: 0,
+          realisedCost: 0,
+          unrealisedCost: 0,
           dayLogs: [],
         };
 
         monthLog.weekLogs.push(weekLog);
       }
 
-      monthLog.spent += dayLog.spent;
-      monthLog.earned += dayLog.earned;
-      monthLog.profitRaw = monthLog.earned - monthLog.spent;
-      monthLog.profitPercent =
-        monthLog.profitRaw === 0
+      monthLog.realisedCost += dayLog.realisedCost;
+      monthLog.unrealisedCost += dayLog.unrealisedCost;
+      monthLog.realisedProfitRaw += dayLog.realisedProfitRaw;
+      monthLog.unrealisedProfitRaw += dayLog.unrealisedProfitRaw;
+      monthLog.combinedProfitRaw +=
+        dayLog.realisedProfitRaw + dayLog.unrealisedProfitRaw;
+      monthLog.realisedProfitPercent =
+        monthLog.realisedProfitRaw === 0
           ? 0
-          : (Math.abs(monthLog.profitRaw) / monthLog.spent) *
+          : (Math.abs(monthLog.realisedProfitRaw) / monthLog.realisedCost) *
             100 *
-            (monthLog.profitRaw < 0 ? -1 : 1);
+            (monthLog.realisedProfitRaw < 0 ? -1 : 1);
+      monthLog.unrealisedProfitPercent =
+        monthLog.unrealisedProfitRaw === 0
+          ? 0
+          : (Math.abs(monthLog.unrealisedProfitRaw) / monthLog.unrealisedCost) *
+            100 *
+            (monthLog.unrealisedProfitRaw < 0 ? -1 : 1);
+      monthLog.combinedProfitPercent =
+        monthLog.combinedProfitRaw === 0
+          ? 0
+          : (Math.abs(monthLog.combinedProfitRaw) /
+              (monthLog.realisedCost + monthLog.unrealisedCost)) *
+            100 *
+            (monthLog.combinedProfitRaw < 0 ? -1 : 1);
 
-      weekLog.spent += dayLog.spent;
-      weekLog.earned += dayLog.earned;
-      weekLog.profitRaw = weekLog.earned - weekLog.spent;
-      weekLog.profitPercent =
-        weekLog.profitRaw === 0
+      weekLog.realisedCost += dayLog.realisedCost;
+      weekLog.unrealisedCost += dayLog.unrealisedCost;
+      weekLog.realisedProfitRaw += dayLog.realisedProfitRaw;
+      weekLog.unrealisedProfitRaw += dayLog.unrealisedProfitRaw;
+      weekLog.combinedProfitRaw +=
+        dayLog.realisedProfitRaw + dayLog.unrealisedProfitRaw;
+      weekLog.realisedProfitPercent =
+        weekLog.realisedProfitRaw === 0
           ? 0
-          : (Math.abs(weekLog.profitRaw) / weekLog.spent) *
+          : (Math.abs(weekLog.realisedProfitRaw) / weekLog.realisedCost) *
             100 *
-            (weekLog.profitRaw < 0 ? -1 : 1);
+            (weekLog.realisedProfitRaw < 0 ? -1 : 1);
+      weekLog.unrealisedProfitPercent =
+        weekLog.unrealisedProfitRaw === 0
+          ? 0
+          : (Math.abs(weekLog.unrealisedProfitRaw) / weekLog.unrealisedCost) *
+            100 *
+            (weekLog.unrealisedProfitRaw < 0 ? -1 : 1);
+      weekLog.combinedProfitPercent =
+        weekLog.combinedProfitRaw === 0
+          ? 0
+          : (Math.abs(weekLog.combinedProfitRaw) /
+              (weekLog.realisedCost + weekLog.unrealisedCost)) *
+            100 *
+            (weekLog.combinedProfitRaw < 0 ? -1 : 1);
 
       weekLog.dayLogs.push(dayLog);
 
@@ -425,11 +611,12 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
 
   useEffect(() => {
     const startFetchingTrades = async () => {
+      const startOfYear = DateTime.local().startOf("year");
       const lastFetchDate = window.localStorage.getItem("journalLastFetchDate");
-      const from = lastFetchDate
+      const fetchFrom = lastFetchDate
         ? DateTime.fromISO(lastFetchDate)
-        : DateTime.local().startOf("year");
-      const to = DateTime.local();
+        : startOfYear;
+      const fetchTo = DateTime.local();
       const limit = 100;
       let offset = 0;
       let fetching = true;
@@ -443,8 +630,8 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
         do {
           const transactions = await loadTrades(
             user,
-            from,
-            to,
+            fetchFrom,
+            fetchTo,
             limit,
             offset,
             true
@@ -476,27 +663,67 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
       buyTransactions.sort(sortTransactionsAsc);
       sellTransactions.sort(sortTransactionsAsc);
 
-      newData = fillDataArrayWithBuys(from, newData, buyTransactions);
+      newData = fillDataArrayWithBuys(startOfYear, newData, buyTransactions);
       [newData, unmatchedTransactions] = fillDataArrayWithSells(
         newData,
         sellTransactions
       );
-      newData = calculateProfits(newData);
+
+      newData = calculateProfits(newData, {});
 
       window.localStorage.setItem("journalData", JSON.stringify(newData));
-      window.localStorage.setItem("journalLastFetchDate", to.toISO());
+      window.localStorage.setItem("journalLastFetchDate", fetchTo.toISO());
 
       setData(newData);
       setUnmatchedTransactionCount(unmatchedTransactions.length);
       setShowUnmatchedAlert(unmatchedTransactions.length > 0);
       setLoading(false);
+      setEndLoadTrades(true);
     };
 
-    if (!initialised) {
-      setInitialised(true);
+    if (!startLoadTrades) {
+      setStartLoadTrades(true);
       startFetchingTrades();
     }
-  }, [initialised, data]);
+  }, [startLoadTrades, data, setLoading, user, setError]);
+
+  useEffect(() => {
+    const fetchMarketData = async () => {
+      setLoading(true);
+
+      try {
+        const marketDataList = await loadMarketData(user, holdingSymbols);
+        const symbolPrices = marketDataList.reduce<{
+          [symbol: string]: number;
+        }>((carry, marketData) => {
+          carry[marketData.symbol] = marketData.lastTrade;
+          return carry;
+        }, {});
+
+        setData(calculateProfits(data, symbolPrices));
+      } catch (e) {
+        setError({
+          title: "Fetching market data failed",
+          message: e.message,
+        });
+      }
+
+      setLoading(false);
+    };
+
+    if (endLoadTrades && !startLoadMarketData && holdingSymbols.length) {
+      setStartLoadMarketData(true);
+      fetchMarketData();
+    }
+  }, [
+    data,
+    holdingSymbols,
+    endLoadTrades,
+    startLoadMarketData,
+    setError,
+    setLoading,
+    user,
+  ]);
 
   return (
     <div className="w-full">
@@ -520,47 +747,90 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
         )}
         <div style={{ width: TABLE_WIDTH }}>
           {monthLogs.map((monthLog) => {
-            const monthProfitRaw = monthLog.profitRaw;
-            const isMonthProfit = monthProfitRaw >= 0;
-            const [displayRaw, displayPercent] = getDisplayProfit(
-              monthProfitRaw,
-              monthLog.profitPercent
-            );
-            const hasMonthEarnings = monthLog.earned !== 0;
+            const {
+              displayRealisedRaw,
+              displayRealisedPercent,
+              displayUnrealisedRaw,
+              displayUnrealisedPercent,
+              displayCombinedRaw,
+              displayCombinedPercent,
+            } = getDisplayProfits(monthLog);
 
             return (
               <div key={monthLog.date.toISO()}>
                 <div className="flex items-center">
                   <H2>{monthLog.date.toFormat("MMMM yyyy")}</H2>
-                  {hasMonthEarnings && (
-                    <span
-                      className={`ml-auto text-2xl text-center ${
-                        isMonthProfit ? "text-green-500" : "text-red-500"
-                      }`}
-                      style={{ width: CELL_WIDTH }}
-                    >
-                      {displayRaw}
-                    </span>
-                  )}
-                  {hasMonthEarnings && (
-                    <span
-                      className={`text-2xl text-center ${
-                        isMonthProfit ? "text-green-500" : "text-red-500"
-                      }`}
-                      style={{ width: CELL_WIDTH }}
-                    >
-                      {displayPercent}
-                    </span>
-                  )}
+
+                  <span
+                    className={`ml-auto flex-shrink-0 text-2xl text-center ${
+                      monthLog.realisedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayRealisedRaw}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 text-2xl text-center ${
+                      monthLog.realisedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayRealisedPercent}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 text-2xl text-center ${
+                      monthLog.unrealisedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayUnrealisedRaw}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 text-2xl text-center ${
+                      monthLog.unrealisedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayUnrealisedPercent}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 text-2xl text-center ${
+                      monthLog.combinedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayCombinedRaw}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 text-2xl text-center ${
+                      monthLog.combinedProfitRaw >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }`}
+                    style={{ width: CELL_WIDTH }}
+                  >
+                    {displayCombinedPercent}
+                  </span>
                 </div>
                 {monthLog.weekLogs.map((weekLog, weekIndex) => {
-                  const weekProfitRaw = weekLog.profitRaw;
-                  const isWeekProfit = weekProfitRaw >= 0;
-                  const [displayRaw, displayPercent] = getDisplayProfit(
-                    weekProfitRaw,
-                    weekLog.profitPercent
-                  );
-                  const hasWeekEarnings = weekLog.earned !== 0;
+                  const {
+                    displayRealisedRaw,
+                    displayRealisedPercent,
+                    displayUnrealisedRaw,
+                    displayUnrealisedPercent,
+                    displayCombinedRaw,
+                    displayCombinedPercent,
+                  } = getDisplayProfits(weekLog);
 
                   return (
                     <div
@@ -569,26 +839,66 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                     >
                       <div className="flex items-center">
                         <H3>{`Week ${weekLog.weekOfMonth}`}</H3>
-                        {hasWeekEarnings && (
-                          <span
-                            className={`ml-auto text-xl text-center ${
-                              isWeekProfit ? "text-green-500" : "text-red-500"
-                            }`}
-                            style={{ width: CELL_WIDTH }}
-                          >
-                            {displayRaw}
-                          </span>
-                        )}
-                        {hasWeekEarnings && (
-                          <span
-                            className={`text-xl text-center ${
-                              isWeekProfit ? "text-green-500" : "text-red-500"
-                            }`}
-                            style={{ width: CELL_WIDTH }}
-                          >
-                            {displayPercent}
-                          </span>
-                        )}
+                        <span
+                          className={`ml-auto flex-shrink-0 text-xl text-center ${
+                            weekLog.realisedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayRealisedRaw}
+                        </span>
+                        <span
+                          className={`flex-shrink-0 text-xl text-center ${
+                            weekLog.realisedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayRealisedPercent}
+                        </span>
+                        <span
+                          className={`flex-shrink-0 text-xl text-center ${
+                            weekLog.unrealisedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayUnrealisedRaw}
+                        </span>
+                        <span
+                          className={`flex-shrink-0 text-xl text-center ${
+                            weekLog.unrealisedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayUnrealisedPercent}
+                        </span>
+                        <span
+                          className={`flex-shrink-0 text-xl text-center ${
+                            weekLog.combinedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayCombinedRaw}
+                        </span>
+                        <span
+                          className={`flex-shrink-0 text-xl text-center ${
+                            weekLog.combinedProfitRaw >= 0
+                              ? "text-green-500"
+                              : "text-red-500"
+                          }`}
+                          style={{ width: CELL_WIDTH }}
+                        >
+                          {displayCombinedPercent}
+                        </span>
                       </div>
                       {weekLog.dayLogs.map((dayLog) => {
                         if (!dayLog) {
@@ -596,13 +906,14 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                         }
 
                         const dayDate = DateTime.fromISO(dayLog.date);
-                        const dayProfitRaw = dayLog.profitRaw;
-                        const isProfit = dayProfitRaw >= 0;
-                        const [displayRaw, displayPercent] = getDisplayProfit(
-                          dayProfitRaw,
-                          dayLog.profitPercent
-                        );
-                        const hasDayEarnings = dayLog.earned !== 0;
+                        const {
+                          displayRealisedRaw,
+                          displayRealisedPercent,
+                          displayUnrealisedRaw,
+                          displayUnrealisedPercent,
+                          displayCombinedRaw,
+                          displayCombinedPercent,
+                        } = getDisplayProfits(dayLog);
                         const symbolEntries = Object.values(dayLog.symbols);
                         symbolEntries.sort(sortLogEntries);
 
@@ -619,54 +930,80 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                             </div>
                             <div className="my-3 flex items-center">
                               <div
-                                className="text-center text-gray-300"
+                                className="flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
                                 Code
                               </div>
                               <div
-                                className="text-center text-gray-300"
+                                className="flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
                                 Buy
                               </div>
                               <div
-                                className="text-center text-gray-300"
+                                className="flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
                                 Sell
                               </div>
                               <div
-                                className="text-center text-gray-300"
+                                className="flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
-                                Holding
+                                Hold
                               </div>
                               <div
-                                className="ml-auto text-center text-gray-300"
+                                className="ml-auto flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
-                                Return ($)
+                                Realised ($)
                               </div>
                               <div
-                                className="text-center text-gray-300"
+                                className="flex-shrink-0 text-center text-gray-300"
                                 style={{ width: CELL_WIDTH }}
                               >
-                                Return (%)
+                                Realised (%)
+                              </div>
+                              <div
+                                className="flex-shrink-0 text-center text-gray-300"
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                Unrealised ($)
+                              </div>
+                              <div
+                                className="flex-shrink-0 text-center text-gray-300"
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                Unrealised (%)
+                              </div>
+                              <div
+                                className="flex-shrink-0 text-center text-gray-300"
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                Combined ($)
+                              </div>
+                              <div
+                                className="flex-shrink-0 text-center text-gray-300"
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                Combined (%)
                               </div>
                             </div>
                             {symbolEntries.map((logEntry) => {
                               const hasHoldings = logEntry.holdingUnitCount > 0;
                               const hasSold = logEntry.sells.length > 0;
-                              const symbolProfitRaw = logEntry.profitRaw;
+                              const symbolProfitRaw =
+                                logEntry.realisedProfitRaw;
                               const isProfit = symbolProfitRaw >= 0;
-                              const [
-                                displayRaw,
-                                displayPercent,
-                              ] = getDisplayProfit(
-                                symbolProfitRaw,
-                                logEntry.profitPercent
-                              );
+                              const {
+                                displayRealisedRaw,
+                                displayRealisedPercent,
+                                displayUnrealisedRaw,
+                                displayUnrealisedPercent,
+                                displayCombinedRaw,
+                                displayCombinedPercent,
+                              } = getDisplayProfits(logEntry);
 
                               return (
                                 <div
@@ -723,53 +1060,132 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                       ? `${logEntry.holdingUnitCount}`
                                       : ""}
                                   </div>
-                                  {hasSold && (
-                                    <div
-                                      className={`ml-auto text-center ${
-                                        isProfit
-                                          ? "text-green-500"
-                                          : "text-red-500"
-                                      }`}
-                                      style={{ width: CELL_WIDTH }}
-                                    >
-                                      {displayRaw}
-                                    </div>
-                                  )}
-                                  {hasSold && (
-                                    <div
-                                      className={`text-center ${
-                                        isProfit
-                                          ? "text-green-500"
-                                          : "text-red-500"
-                                      }`}
-                                      style={{ width: CELL_WIDTH }}
-                                    >
-                                      {displayPercent}
-                                    </div>
-                                  )}
+                                  <div
+                                    className={`ml-auto text-center ${
+                                      logEntry.realisedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayRealisedRaw}
+                                  </div>
+                                  <div
+                                    className={`text-center ${
+                                      logEntry.realisedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayRealisedPercent}
+                                  </div>
+                                  <div
+                                    className={`text-center ${
+                                      logEntry.unrealisedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayUnrealisedRaw}
+                                  </div>
+                                  <div
+                                    className={`text-center ${
+                                      logEntry.unrealisedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayUnrealisedPercent}
+                                  </div>
+                                  <div
+                                    className={`text-center ${
+                                      logEntry.combinedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayCombinedRaw}
+                                  </div>
+                                  <div
+                                    className={`text-center ${
+                                      logEntry.combinedProfitRaw >= 0
+                                        ? "text-green-500"
+                                        : "text-red-500"
+                                    }`}
+                                    style={{ width: CELL_WIDTH }}
+                                  >
+                                    {displayCombinedPercent}
+                                  </div>
                                 </div>
                               );
                             })}
-                            {hasDayEarnings && (
-                              <div className="py-3 flex items-center border-t border-gray-200">
-                                <span
-                                  className={`ml-auto text-lg text-center ${
-                                    isProfit ? "text-green-500" : "text-red-500"
-                                  }`}
-                                  style={{ width: CELL_WIDTH }}
-                                >
-                                  {displayRaw}
-                                </span>
-                                <span
-                                  className={`text-lg text-center ${
-                                    isProfit ? "text-green-500" : "text-red-500"
-                                  }`}
-                                  style={{ width: CELL_WIDTH }}
-                                >
-                                  {displayPercent}
-                                </span>
-                              </div>
-                            )}
+
+                            <div className="py-3 flex items-center border-t border-gray-200">
+                              <span
+                                className={`ml-auto flex-shrink-0 text-lg text-center ${
+                                  dayLog.realisedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayRealisedRaw}
+                              </span>
+                              <span
+                                className={`flex-shrink-0 text-lg text-center ${
+                                  dayLog.realisedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayRealisedPercent}
+                              </span>
+                              <span
+                                className={`flex-shrink-0 text-lg text-center ${
+                                  dayLog.unrealisedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayUnrealisedRaw}
+                              </span>
+                              <span
+                                className={`flex-shrink-0 text-lg text-center ${
+                                  dayLog.unrealisedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayUnrealisedPercent}
+                              </span>
+                              <span
+                                className={`flex-shrink-0 text-lg text-center ${
+                                  dayLog.combinedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayCombinedRaw}
+                              </span>
+                              <span
+                                className={`flex-shrink-0 text-lg text-center ${
+                                  dayLog.combinedProfitRaw >= 0
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                                style={{ width: CELL_WIDTH }}
+                              >
+                                {displayCombinedPercent}
+                              </span>
+                            </div>
                           </div>
                         );
                       })}

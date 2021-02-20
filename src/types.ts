@@ -22,3 +22,12 @@ export interface Transaction {
   tranAmount: number; // Cost/profit of transaction.
   tranWhen: string; // When the transaction occurred. ISO8601 string e.g. "2021-02-03T14:30:18.032Z"
 }
+
+export interface MarketData {
+  symbol: string;
+  ask: number;
+  bid: number;
+  lastTrade: number;
+  priorClose: number;
+  close: number;
+}

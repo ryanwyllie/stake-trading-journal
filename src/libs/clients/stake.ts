@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { Transaction, User } from "../../types";
+import { MarketData, Transaction, User } from "../../types";
 
 const API_URL = "https://global-prd-api.hellostake.com/api";
 
@@ -100,5 +100,31 @@ export async function loadTrades(
   } else {
     const responseData = await response.json();
     throw new Error(`Failed to load transactions: ${responseData.message}`);
+  }
+}
+
+export async function loadMarketData(user: User, symbols: string[]) {
+  const response = await fetch(
+    apiUrl(`quotes/marketData/${symbols.join(",")}`),
+    {
+      method: "GET",
+      mode: "cors",
+      cache: "no-cache",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "Stake-Session-Token": user.sessionKey,
+      },
+      redirect: "follow",
+      referrerPolicy: "no-referrer",
+    }
+  );
+
+  if (response.ok) {
+    const responseData = await response.json();
+    return responseData.marketDataList as MarketData[];
+  } else {
+    const responseData = await response.json();
+    throw new Error(`Failed to load market data: ${responseData.message}`);
   }
 }
