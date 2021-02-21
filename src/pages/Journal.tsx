@@ -13,6 +13,7 @@ import ErrorAlert from "../components/alerts/Error";
 
 const TABLE_WIDTH = 1300;
 const CELL_WIDTH = 125;
+const SUMMARY_CELL_WIDTH = 140;
 
 interface BuySellEntry {
   orderId: string;
@@ -54,6 +55,9 @@ interface DayLog {
   realisedCost: number;
   unrealisedCost: number;
   date: string;
+  hasHoldings: boolean;
+  hasSells: boolean;
+  startingAccountBalance: number;
 }
 
 type DayLogs = Array<DayLog | null>;
@@ -70,6 +74,8 @@ interface WeekLog {
   realisedCost: number;
   unrealisedCost: number;
   dayLogs: DayLogs;
+  hasHoldings: boolean;
+  hasSells: boolean;
 }
 
 type WeekLogs = WeekLog[];
@@ -85,6 +91,8 @@ interface MonthLog {
   realisedCost: number;
   unrealisedCost: number;
   weekLogs: WeekLogs;
+  hasHoldings: boolean;
+  hasSells: boolean;
 }
 
 type MonthLogs = MonthLog[];
@@ -149,6 +157,10 @@ function fillDataArrayWithBuys(
           realisedCost: 0,
           unrealisedCost: 0,
           date: date.startOf("day").toISO(),
+          hasHoldings: false,
+          hasSells: false,
+          startingAccountBalance:
+            transaction.accountBalance - transaction.accountAmount,
         };
       }
 
@@ -274,6 +286,8 @@ function calculateProfits(
     let dayRealisedGain = 0;
     let dayUnrealisedCost = 0;
     let dayUnrealisedGain = 0;
+    let dayHasHoldings = false;
+    let dayHasSells = false;
 
     const symbols = Object.keys(dayLog.symbols).reduce<DayLog["symbols"]>(
       (carry, symbol) => {
@@ -347,6 +361,8 @@ function calculateProfits(
         dayRealisedGain += realisedGain;
         dayUnrealisedCost += unrealisedCost;
         dayUnrealisedGain += unrealisedGain;
+        dayHasHoldings = dayHasHoldings || logEntry.holdingUnitCount > 0;
+        dayHasSells = dayHasSells || logEntry.sells.length > 0;
 
         carry[symbol] = {
           ...logEntry,
@@ -402,6 +418,8 @@ function calculateProfits(
       combinedProfitPercent,
       realisedCost: dayRealisedCost,
       unrealisedCost: dayUnrealisedCost,
+      hasHoldings: dayHasHoldings,
+      hasSells: dayHasSells,
     };
   });
 }
@@ -505,6 +523,8 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
           realisedCost: 0,
           unrealisedCost: 0,
           weekLogs: [],
+          hasHoldings: false,
+          hasSells: false,
         };
 
         carry.push(monthLog);
@@ -535,11 +555,15 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
           realisedCost: 0,
           unrealisedCost: 0,
           dayLogs: [],
+          hasHoldings: false,
+          hasSells: false,
         };
 
         monthLog.weekLogs.push(weekLog);
       }
 
+      monthLog.hasHoldings = monthLog.hasHoldings || dayLog.hasHoldings;
+      monthLog.hasSells = monthLog.hasSells || dayLog.hasSells;
       monthLog.realisedCost += dayLog.realisedCost;
       monthLog.unrealisedCost += dayLog.unrealisedCost;
       monthLog.realisedProfitRaw += dayLog.realisedProfitRaw;
@@ -566,6 +590,8 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
             100 *
             (monthLog.combinedProfitRaw < 0 ? -1 : 1);
 
+      weekLog.hasHoldings = weekLog.hasHoldings || dayLog.hasHoldings;
+      weekLog.hasSells = weekLog.hasSells || dayLog.hasSells;
       weekLog.realisedCost += dayLog.realisedCost;
       weekLog.unrealisedCost += dayLog.unrealisedCost;
       weekLog.realisedProfitRaw += dayLog.realisedProfitRaw;
@@ -607,6 +633,64 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
     newMonthLogs.reverse();
 
     return newMonthLogs;
+  }, [data]);
+  const summary = useMemo(() => {
+    let startingBalance = 0;
+
+    const [realisedBalance, unrealisedBalance] = data.reduce<[number, number]>(
+      (carry, dayLog) => {
+        if (dayLog) {
+          if (!startingBalance) {
+            startingBalance = dayLog.startingAccountBalance;
+            carry[0] = startingBalance;
+            carry[1] = startingBalance;
+          }
+
+          carry[0] += dayLog.realisedProfitRaw;
+          carry[1] += dayLog.combinedProfitRaw;
+        }
+        return carry;
+      },
+      [0, 0]
+    );
+
+    const realisedProfitRaw = realisedBalance - startingBalance;
+    const realisedProfitPercent =
+      realisedProfitRaw === 0
+        ? 0
+        : (Math.abs(realisedProfitRaw) / startingBalance) *
+          100 *
+          (realisedProfitRaw >= 0 ? 1 : -1);
+    const isRealisedProfit = realisedProfitRaw >= 0;
+    const unrealisedProfitRaw = unrealisedBalance - startingBalance;
+    const unrealisedProfitPercent =
+      unrealisedProfitRaw === 0
+        ? 0
+        : (Math.abs(unrealisedProfitRaw) / startingBalance) *
+          100 *
+          (unrealisedProfitRaw >= 0 ? 1 : -1);
+    const isUnrealisedProfit = unrealisedProfitRaw >= 0;
+
+    const [
+      displayRealisedProfitRaw,
+      displayRealisedProfitPercent,
+    ] = getDisplayProfit(realisedProfitRaw, realisedProfitPercent);
+    const [
+      displayUnrealisedProfitRaw,
+      displayUnrealisedProfitPercent,
+    ] = getDisplayProfit(unrealisedProfitRaw, unrealisedProfitPercent);
+
+    return {
+      startingBalance: `$${startingBalance}`,
+      isRealisedProfit,
+      realisedBalance: `$${realisedBalance.toFixed(2)}`,
+      realisedProfitRaw: displayRealisedProfitRaw,
+      realisedProfitPercent: displayRealisedProfitPercent,
+      isUnrealisedProfit,
+      unrealisedBalance: `$${unrealisedBalance.toFixed(2)}`,
+      unrealisedProfitRaw: displayUnrealisedProfitRaw,
+      unrealisedProfitPercent: displayUnrealisedProfitPercent,
+    };
   }, [data]);
 
   useEffect(() => {
@@ -746,6 +830,102 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
           </div>
         )}
         <div style={{ width: TABLE_WIDTH }}>
+          <div>
+            <H2>Account summary</H2>
+            <div className="mt-2 px-2 py-5 border border-gray-100 shadow rounded-lg flex justify-between">
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Starting balance</div>
+                <div className="my-3">{summary.startingBalance}</div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Realised balance</div>
+                <div
+                  className={`my-3 ${
+                    summary.isRealisedProfit ? "text-green-500" : "text-red-500"
+                  }`}
+                >
+                  {summary.realisedBalance}
+                </div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Realised ($)</div>
+                <div
+                  className={`my-3 ${
+                    summary.isRealisedProfit ? "text-green-500" : "text-red-500"
+                  }`}
+                >
+                  {summary.realisedProfitRaw}
+                </div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Realised (%)</div>
+                <div
+                  className={`my-3 ${
+                    summary.isRealisedProfit ? "text-green-500" : "text-red-500"
+                  }`}
+                >
+                  {summary.realisedProfitPercent}
+                </div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Unrealised balance</div>
+                <div
+                  className={`my-3 ${
+                    summary.isUnrealisedProfit
+                      ? "text-green-500"
+                      : "text-red-500"
+                  }`}
+                >
+                  {summary.unrealisedBalance}
+                </div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Unrealised ($)</div>
+                <div
+                  className={`my-3 ${
+                    summary.isUnrealisedProfit
+                      ? "text-green-500"
+                      : "text-red-500"
+                  }`}
+                >
+                  {summary.unrealisedProfitRaw}
+                </div>
+              </div>
+              <div
+                className="flex-shrink-0 text-center"
+                style={{ width: SUMMARY_CELL_WIDTH }}
+              >
+                <div className="text-gray-300">Unrealised (%)</div>
+                <div
+                  className={`my-3 ${
+                    summary.isUnrealisedProfit
+                      ? "text-green-500"
+                      : "text-red-500"
+                  }`}
+                >
+                  {summary.unrealisedProfitPercent}
+                </div>
+              </div>
+            </div>
+          </div>
           {monthLogs.map((monthLog) => {
             const {
               displayRealisedRaw,
@@ -757,7 +937,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
             } = getDisplayProfits(monthLog);
 
             return (
-              <div key={monthLog.date.toISO()}>
+              <div className="mt-8" key={monthLog.date.toISO()}>
                 <div className="flex items-center">
                   <H2>{monthLog.date.toFormat("MMMM yyyy")}</H2>
 
@@ -769,7 +949,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                     }`}
                     style={{ width: CELL_WIDTH }}
                   >
-                    {displayRealisedRaw}
+                    {monthLog.hasSells ? displayRealisedRaw : ""}
                   </span>
                   <span
                     className={`flex-shrink-0 text-2xl text-center ${
@@ -779,7 +959,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                     }`}
                     style={{ width: CELL_WIDTH }}
                   >
-                    {displayRealisedPercent}
+                    {monthLog.hasSells ? displayRealisedPercent : ""}
                   </span>
                   <span
                     className={`flex-shrink-0 text-2xl text-center ${
@@ -789,7 +969,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                     }`}
                     style={{ width: CELL_WIDTH }}
                   >
-                    {displayUnrealisedRaw}
+                    {monthLog.hasHoldings ? displayUnrealisedRaw : ""}
                   </span>
                   <span
                     className={`flex-shrink-0 text-2xl text-center ${
@@ -799,7 +979,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                     }`}
                     style={{ width: CELL_WIDTH }}
                   >
-                    {displayUnrealisedPercent}
+                    {monthLog.hasHoldings ? displayUnrealisedPercent : ""}
                   </span>
                   <span
                     className={`flex-shrink-0 text-2xl text-center ${
@@ -847,7 +1027,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                           }`}
                           style={{ width: CELL_WIDTH }}
                         >
-                          {displayRealisedRaw}
+                          {weekLog.hasSells ? displayRealisedRaw : ""}
                         </span>
                         <span
                           className={`flex-shrink-0 text-xl text-center ${
@@ -857,7 +1037,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                           }`}
                           style={{ width: CELL_WIDTH }}
                         >
-                          {displayRealisedPercent}
+                          {weekLog.hasSells ? displayRealisedPercent : ""}
                         </span>
                         <span
                           className={`flex-shrink-0 text-xl text-center ${
@@ -867,7 +1047,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                           }`}
                           style={{ width: CELL_WIDTH }}
                         >
-                          {displayUnrealisedRaw}
+                          {weekLog.hasHoldings ? displayUnrealisedRaw : ""}
                         </span>
                         <span
                           className={`flex-shrink-0 text-xl text-center ${
@@ -877,7 +1057,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                           }`}
                           style={{ width: CELL_WIDTH }}
                         >
-                          {displayUnrealisedPercent}
+                          {weekLog.hasHoldings ? displayUnrealisedPercent : ""}
                         </span>
                         <span
                           className={`flex-shrink-0 text-xl text-center ${
@@ -993,9 +1173,6 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                             {symbolEntries.map((logEntry) => {
                               const hasHoldings = logEntry.holdingUnitCount > 0;
                               const hasSold = logEntry.sells.length > 0;
-                              const symbolProfitRaw =
-                                logEntry.realisedProfitRaw;
-                              const isProfit = symbolProfitRaw >= 0;
                               const {
                                 displayRealisedRaw,
                                 displayRealisedPercent,
@@ -1068,7 +1245,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                     }`}
                                     style={{ width: CELL_WIDTH }}
                                   >
-                                    {displayRealisedRaw}
+                                    {hasSold ? displayRealisedRaw : ""}
                                   </div>
                                   <div
                                     className={`text-center ${
@@ -1078,7 +1255,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                     }`}
                                     style={{ width: CELL_WIDTH }}
                                   >
-                                    {displayRealisedPercent}
+                                    {hasSold ? displayRealisedPercent : ""}
                                   </div>
                                   <div
                                     className={`text-center ${
@@ -1088,7 +1265,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                     }`}
                                     style={{ width: CELL_WIDTH }}
                                   >
-                                    {displayUnrealisedRaw}
+                                    {hasHoldings ? displayUnrealisedRaw : ""}
                                   </div>
                                   <div
                                     className={`text-center ${
@@ -1098,7 +1275,9 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                     }`}
                                     style={{ width: CELL_WIDTH }}
                                   >
-                                    {displayUnrealisedPercent}
+                                    {hasHoldings
+                                      ? displayUnrealisedPercent
+                                      : ""}
                                   </div>
                                   <div
                                     className={`text-center ${
@@ -1133,7 +1312,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                 }`}
                                 style={{ width: CELL_WIDTH }}
                               >
-                                {displayRealisedRaw}
+                                {dayLog.hasSells ? displayRealisedRaw : ""}
                               </span>
                               <span
                                 className={`flex-shrink-0 text-lg text-center ${
@@ -1143,7 +1322,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                 }`}
                                 style={{ width: CELL_WIDTH }}
                               >
-                                {displayRealisedPercent}
+                                {dayLog.hasSells ? displayRealisedPercent : ""}
                               </span>
                               <span
                                 className={`flex-shrink-0 text-lg text-center ${
@@ -1153,7 +1332,7 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                 }`}
                                 style={{ width: CELL_WIDTH }}
                               >
-                                {displayUnrealisedRaw}
+                                {dayLog.hasHoldings ? displayUnrealisedRaw : ""}
                               </span>
                               <span
                                 className={`flex-shrink-0 text-lg text-center ${
@@ -1163,7 +1342,9 @@ const JournalPage: React.FC<JournalPageProps> = ({ user }) => {
                                 }`}
                                 style={{ width: CELL_WIDTH }}
                               >
-                                {displayUnrealisedPercent}
+                                {dayLog.hasHoldings
+                                  ? displayUnrealisedPercent
+                                  : ""}
                               </span>
                               <span
                                 className={`flex-shrink-0 text-lg text-center ${
